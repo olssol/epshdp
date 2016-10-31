@@ -1,4 +1,4 @@
-##Time-stamp: <2016-03-07 10:01:46 cwang68>
+##Time-stamp: <2016-06-07 18:18:47 cwang68>
 
 library(cgtool);
 library(hdpmn);
@@ -13,12 +13,13 @@ library(mvtnorm);
 TRT.NUMBER  <- c(0,1);
 
 ##analysis covariates for sedation data
-PS.COV      <- c("sex", "age",          "asa", "diagnosis", "BMI",
-                 "spo2", "allergy", "surgery",  "medicine", "hypertension",
+PS.COV      <- c("sex",      "age",     "asa",     "diagnosis",
+                 "BMI",      "spo2",    "allergy", "surgery",
+                 "medicine", "hypertension",
                  "diabetes", "heart");
 
 ##simulation scenarios
-SIMU.EXT.ALL    <- c(20);
+SIMU.EXT.ALL    <- c(71:73);
 
 ##sensitivity
 DELTA.ALL       <- c(0);
@@ -27,14 +28,22 @@ DELTA.ALL       <- c(0);
 IGNORE.EXISTING <- TRUE;
 
 ##propensity score breaks
-PS.BREAKS       <- 5;
+PS.CLASS        <- 5;
 
 ##number bootstraps
-N.BOOTS         <- 500;
+N.BOOTS         <- 100;
 
 ##MCMC
-N.ITER          <- 10000;
-N.DISCARD       <- 4000;
+HDP.OPS <- list(n.iter=6000,
+                n.discard=2000,
+                n.batch=20,
+                mcmc.eps=1,
+                eps=0.5,
+                m.prior=1,
+                B.prior=1, S.prior=1, alpha.prior=1,
+                alpha=20,
+                q=10,
+                cc=10);
 
 ## Simulation set up
 N.REPS          <- 500; ##number of total replications
@@ -44,9 +53,8 @@ N.EACH          <- ceiling(N.REPS*length(SIMU.EXT.ALL) / N.NODES);
 ##HDP prediction
 PRED.R          <- 0;
 
-##batch of patients to predict each time for memory leaking
-PRED.BATCH      <- 40;
-
+##ratio for Y to make Y comparable to scores
+CONST.Y         <- 0.02;
 
 ##----------------------------------------------------------------------------
 ##                TOOL
@@ -285,15 +293,32 @@ get.ps <- function(dta, ps.cov=PS.COV, grp="group", delta=0) {
 }
 
 ##ps stratification
-get.ps.strat.est <- function(dta, grp="group", ps.cov=PS.COV, y="ae", n.breaks=5, delta=0) {
+## random: whether the study is a randomized study
+get.ps.strat.est <- function(dta,
+                             grp="group",
+                             random=0,
+                             ps.cov=PS.COV,
+                             y="ae",
+                             n.class=5,
+                             delta=0) {
 
+    ##randomized study
+    ## if (1 == random) {
+    ##     which.0 <- which(0 == dta[,grp]);
+    ##     trt.est <- mean(dta[-which.0, y]) - mean(dta[which.0, y]);
+    ##     return(trt.est);
+    ## }
+
+    ##observational study
     ps.score <- get.ps(dta, ps.cov, grp, delta=delta)$score;
-    ps.cut   <- cut(ps.score, breaks=n.breaks, labels=1:n.breaks);
+    cuts     <- quantile(ps.score, seq(0,1,length=n.class+1));
+    cuts[1]  <- cuts[1]-0.01;
 
     a.stra <- NULL;
-    for (i in 1:n.breaks) {
-        cur.d <- dta[which(i == ps.cut),];
-        t.grps  <- sort(unique(cur.d[, grp]));
+    for (i in 1:n.class) {
+        cur.break <- which(ps.score <= cuts[i+1] & ps.score > cuts[i]);
+        cur.d     <- dta[cur.break,];
+        t.grps    <- sort(unique(cur.d[, grp]));
 
         if (1 == length(t.grps))
             next;
@@ -309,7 +334,6 @@ get.ps.strat.est <- function(dta, grp="group", ps.cov=PS.COV, y="ae", n.breaks=5
         ##     var <- est*(1-est)/sum(x);
         ##     c(est, var);
         ## });
-
         a.stra <- c(a.stra, cur.e);
     }
 
@@ -319,15 +343,20 @@ get.ps.strat.est <- function(dta, grp="group", ps.cov=PS.COV, y="ae", n.breaks=5
 
 
 ##typical PS stratification
-get.ps.effect <- function(dta=all.data, study="Study", group="group", ..., n.boots=0) {
+get.ps.effect <- function(dta=all.data,
+                          study="Study",
+                          group="group",
+                          random="Randomized",
+                          ...,
+                          n.boots=0) {
 
-    d.study  <- sort(unique(dta[, study]));
+    d.study  <- unique(dta[, c(study, random)]);
     trts     <- sort(unique(dta[, group]));
 
     rst <- NULL;
-    for (i in 1:length(d.study)) {
-        cur.s   <- dta[which(d.study[i] == dta[, study]),];
-        cur.rst <- get.ps.strat.est(cur.s, grp=group, ...);
+    for (i in 1:nrow(d.study)) {
+        cur.s   <- dta[which(d.study[i, study] == dta[, study]),];
+        cur.rst <- get.ps.strat.est(cur.s, grp=group, random=d.study[i, random], ...);
 
         if (n.boots > 0) {
             d.grps <- list(NULL);
@@ -350,9 +379,14 @@ get.ps.effect <- function(dta=all.data, study="Study", group="group", ..., n.boo
             }
 
             cur.rst <- c(cur.rst, sd(bs.est));
+        } else {
+            cur.rst <- c(cur.rst, 0);
         }
-        rst <- rbind(rst, cur.rst);
+
+        rst <- rbind(rst, c(d.study[i, study], cur.rst));
     }
+
+    colnames(rst) <- c("study", "est", "bssd");
     rst
 }
 
@@ -367,15 +401,22 @@ get.ps.effect <- function(dta=all.data, study="Study", group="group", ..., n.boo
 get.all.ps <- function(dta=all.data,
                        study="hospital",
                        group="group",
+                       random="randomized",
                        ps.cov=PS.COV,
                        prefix="score",
                        delta=0,
                        take.logit=TRUE) {
 
-    d.study <- sort(unique(dta[,study]));
+    d.study <- unique(dta[,c(study,random)]);
+    osd     <- NULL;
     rst     <- NULL;
-    for (i in 1:length(d.study)) {
-        cur.h   <- subset(dta, dta[, study] == d.study[i]);
+    for (i in 1:nrow(d.study)) {
+        ##randomized study
+        if (1 == d.study[i,random])
+            next;
+
+        osd     <- c(osd, i);
+        cur.h   <- subset(dta, dta[, study] == d.study[i, study]);
         cur.glm <- get.ps(cur.h, ps.cov, group, delta=delta)$glm.fit;
         cur.ps  <- predict(cur.glm, dta, type="response");
 
@@ -386,19 +427,22 @@ get.all.ps <- function(dta=all.data,
         rst     <- cbind(rst, cur.ps);
     }
 
-    colnames(rst) <- paste(prefix, d.study, sep="");
+    colnames(rst) <- paste(prefix, osd, sep="");
     if (take.logit)
         rst <- log(rst/(1-rst));
 
     ##add score
     dta.score <- cbind(dta, rst);
-    score     <- apply(dta.score, 1,
+    ps        <- apply(dta.score, 1,
                        function(x) {
-                           x[paste(prefix, x[study], sep="")];
+                           if (x[study] %in% osd) {
+                               rst <- x[paste(prefix, x[study], sep="")];
+                           } else {
+                               rst <- NA;
+                           }
+                           rst
                        });
-
-    dta.score[,prefix] <- score;
-
+    dta.score[, "ps"] <- ps;
     ##return
     dta.score
 }
@@ -410,6 +454,7 @@ get.all.ps <- function(dta=all.data,
 ##
 ##------------------------------------------------------------------------------
 
+
 ##portal for all simu parameters
 set.simu.par <- function(simu.ext=SIMU.EXT) {
     eval(parse(text=paste("rst <- set.simu.par.", simu.ext, "()", sep="")));
@@ -417,45 +462,188 @@ set.simu.par <- function(simu.ext=SIMU.EXT) {
 }
 
 
-set.simu.par.19 <- function(sizes=c(200,200,200),
-                            simu.note="same trt effect, different cov effect") {
-    study.1 <- list(nPat.tot=sizes[1],
-                    muCovar=rep(1, 6),
-                    StDevCovar=rep(2, 6),
-                    corrCovar=0.1,
-                    Ysig=1,
-                    ZBeta=c(-1, 0.1, 0.1, 0.1, 0.1,0,0),
-                    RegressCoeffs=c(3, 0, 0, 2, 2, 2, 0, -2));
-    study.2 <- list(nPat.tot=sizes[2],
-                    muCovar=rep(1, 6),
-                    StDevCovar=rep(2, 6),
-                    corrCovar=0.1,
-                    Ysig=1,
-                    ZBeta=c(1,-0.1,-0.1,-0.1,-0.1, 0,0),
-                    RegressCoeffs=c(3, 0, 0, 0.5, 0.5, 0.5, 0, -2));
-    study.3 <- list(nPat.tot=sizes[3],
-                    muCovar=rep(1, 6),
-                    StDevCovar=rep(2, 6),
-                    corrCovar=0.1,
-                    Ysig=1,
-                    ZBeta=0,
-                    RegressCoeffs=c(3, 0, 0, 1.5, 1.5, 1.5, 0, -2));
+##get true trt effects and assignment ratio simulation
+get.simu.true <- function(simu.par.lst, sizes, nPat=100000) {
+    for (j in 1:length(simu.par.lst)) {
+        pt.j    <- GenDataMatrix(j, simu.par.lst, nPat=nPat, simu.y=FALSE);
+        muCovar <- simu.par.lst[[j]]$muCovar;
+        SdCovar <- simu.par.lst[[j]]$StDevCovar;
+        mu.cov  <- c(1, muCovar, muCovar[length(muCovar)]^2 + SdCovar[length(muCovar)]^2);
+        coeff   <- simu.par.lst[[j]]$RegressCoeffs;
 
-    SIMU.PAR.LST <- list(study.1, study.3);
-    SIMU.NOTE    <- simu.note;
+
+        simu.par.lst[[j]]$nPat.tot      <- sizes[j];
+        simu.par.lst[[j]]$true.pz0      <- mean(pt.j[,"Z"]);
+        simu.par.lst[[j]]$true.effect   <- sum(mu.cov*coeff[2,]) - sum(mu.cov*coeff[1,]);
+        simu.par.lst[[j]]$is.randomized <- identical(0, simu.par.lst[[j]]$ZBeta);
+    }
+
+    simu.par.lst
+}
+
+set.simu.par.71 <- function(sizes=c(500,500,500,200,200), simu.note="full analysis") {
+
+    reg.coeff <- rbind(c(b0=0, u=0, v1=0, v2=0, v3=1.5, v4=1.5, v5=1.5, bv52=-2),
+                       c(b0=3, u=0, v1=0, v2=0, v3=1.5, v4=1.5, v5=1.5, bv52=-2));
+
+    study.1 <- list(muCovar=rep(5, 6), StDevCovar=rep(0.5, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-20, u=0, v1=1, v2=1, v3=1, v4=1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.2 <- list(muCovar=rep(5, 6), StDevCovar=rep(0.5, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-40, u=0, v1=2, v2=2, v3=2, v4=2, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.3 <- list(muCovar=rep(5, 6), StDevCovar=rep(0.5, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-55, u=0, v1=3, v2=3, v3=3, v4=3, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.4 <- list(muCovar=rep(5, 6), StDevCovar=rep(0.1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+
+    study.5 <- list(muCovar=rep(5, 6), StDevCovar=rep(0.1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+
+    SIMU.PAR.LST <- get.simu.true(list(study.1, study.2, study.3, study.4),
+                                  sizes);
+
     SIMU.PS.COV  <- paste("X", 1:4, sep="");
+    SIMU.SCE     <- 71;
+    SIMU.HDP.COV <- paste("score", 1:3, sep="");
+
+    SIMU.OPS     <- HDP.OPS;
+    SIMU.NOTE    <- simu.note;
+
 
     ##return
     rst <- make.list(environment());
     rst
 }
 
-set.simu.par.20 <- function() {
-    rst <- set.simu.par.19(sizes = c(10000,10000,10000));
+set.simu.par.72 <- function() {
+    rst <- set.simu.par.71(simu.note="no sharing");
+    rst$SIMU.OPS$mcmc.eps <- 0;
+    rst$SIMU.OPS$eps      <- 1;
+    rst
+}
+
+set.simu.par.73 <- function() {
+    rst <- set.simu.par.71(simu.note="no sharing, specific score");
+    rst$SIMU.HDP.COV      <- "score1";
+    rst$SIMU.OPS$mcmc.eps <- 0;
+    rst$SIMU.OPS$eps      <- 1;
+    rst
+}
+
+set.simu.par.12 <- function(sizes=c(500,500,500,200,200), simu.note="") {
+
+    reg.coeff <- CONST.Y*rbind(c(b0=0, u=0, v1=0, v2=0, v3=1.5, v4=1.5, v5=1.5, bv52=-2),
+                               c(b0=-15, u=0, v1=0, v2=0, v3=1, v4=1, v5=1, bv52=-1));
+
+    study.1 <- list(muCovar=rep(5, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-3, u=0, v1=0.2, v2=0.2, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.2 <- list(muCovar=rep(5, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-4, u=0, v1=0.3, v2=0.3, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.3 <- list(muCovar=rep(5, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-4, u=0, v1=0.2, v2=0.2, v3=0.3, v4=0.3, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.4 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+    study.5 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+
+    SIMU.PAR.LST <- get.simu.true(list(study.1, study.2, study.3, study.4, study.5), sizes);
+    SIMU.PS.COV  <- paste("X", 1:4, sep="");
+    SIMU.NOTE    <- simu.note;
+
+    ##return
+    rst <- make.list(environment());
+    rst
+}
+
+set.simu.par.22 <- function() {
+    rst <- set.simu.par.12(sizes = c(1000,1000,1000, 400, 400));
+}
+
+
+set.simu.par.13 <- function(sizes=c(500,500,500,200,200), simu.note="") {
+
+    reg.coeff <- CONST.Y*rbind(c(b0=0,   u=0, v1=0, v2=0, v3=1.5, v4=1.5, v5=1.5, bv52=-2),
+                               c(b0=-15, u=0, v1=0, v2=0, v3=1,   v4=1,   v5=1,   bv52=-1));
+
+    study.1 <- list(muCovar=rep(0, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=0, u=0, v1=0.2, v2=0.2, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.2 <- list(muCovar=rep(5, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-4, u=0, v1=0.3, v2=0.3, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.3 <- list(muCovar=rep(10, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-10, u=0, v1=0.2, v2=0.2, v3=0.3, v4=0.3, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.4 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+    study.5 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+
+    SIMU.PAR.LST <- get.simu.true(list(study.1, study.2, study.3, study.4, study.5), sizes);
+    SIMU.PS.COV  <- paste("X", 1:4, sep="");
+    SIMU.NOTE    <- simu.note;
+
+    ##return
+    rst <- make.list(environment());
+    rst
+}
+
+set.simu.par.23 <- function() {
+    rst <- set.simu.par.13(sizes = c(1000,1000,1000, 400, 400));
+}
+
+set.simu.par.14 <- function(sizes=c(500,500,500,200,200), simu.note="") {
+
+    reg.coeff <- CONST.Y*rbind(c(b0=0, u=1, v1=0, v2=0, v3=1.5, v4=1.5, v5=1.5, bv52=-2),
+                               c(b0=-15, u=1, v1=0, v2=0, v3=1, v4=1, v5=1, bv52=-1));
+
+    study.1 <- list(muCovar=rep(0, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=0, u=0.3, v1=0.2, v2=0.2, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.2 <- list(muCovar=rep(5, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-5, u=0.3, v1=0.3, v2=0.3, v3=0.1, v4=0.1, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.3 <- list(muCovar=rep(10, 6), StDevCovar=rep(3, 6), corrCovar=0.1,
+                    Ysig=1,
+                    ZBeta=c(a0=-12, u=0.3, v1=0.2, v2=0.2, v3=0.3, v4=0.3, v5=0),
+                    RegressCoeffs=reg.coeff);
+    study.4 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+    study.5 <- list(muCovar=rep(5, 6), StDevCovar=rep(1, 6), corrCovar=0.1,
+                    Ysig=1, ZBeta=0, RegressCoeffs=reg.coeff);
+
+    SIMU.PAR.LST <- get.simu.true(list(study.1, study.2, study.3, study.4, study.5), sizes);
+    SIMU.PS.COV  <- paste("X", 1:4, sep="");
+    SIMU.NOTE    <- simu.note;
+
+    ##return
+    rst <- make.list(environment());
+    rst
+}
+
+set.simu.par.24 <- function() {
+    rst <- set.simu.par.14(sizes = c(1000,1000,1000, 400, 400));
 }
 
 ##assign treatment
 set.trt.z <- function(covx, zbeta, trt.val=TRT.NUMBER) {
+
     n.x    <- ncol(covx) + 1;
     n.beta <- length(zbeta);
 
@@ -473,15 +661,20 @@ set.trt.z <- function(covx, zbeta, trt.val=TRT.NUMBER) {
 
 ##set mean
 set.xbeta <- function(covx, beta) {
+    trt <- covx[1];
     ##add quaratic effect
-    c.x <- c(covx, covx[2]^2);
-    sum(c.x * beta);
+    c.x <- covx[-1];
+    c.x <- c(1, c.x, c.x[length(c.x)]^2);
+    sum(c.x * beta[trt+1,]);
 }
 
-GenDataMatrix <- function(j, par.list, Study=NULL, cov.x=NULL, nPat=NULL, z.val=NULL) {
+GenDataMatrix <- function(j, par.list, Study=NULL, cov.x=NULL, nPat=NULL, z.val=NULL, simu.y=TRUE) {
 
     ##expose parameters in par.list
     make.global(par.list[[j]], environment());
+
+    if (!exists("is.randomized"))
+        is.randomized <- -1;
 
     ##study
     if (is.null(Study)) Study <- j;
@@ -523,17 +716,20 @@ GenDataMatrix <- function(j, par.list, Study=NULL, cov.x=NULL, nPat=NULL, z.val=
         }
     }
 
-    ##beta0 + beta * x
-    xbeta <- apply(X, 1, function(x) {set.xbeta(x, RegressCoeffs)});
-
     ##simulate Y
-    Y        <- rnorm(nPat, xbeta, Ysig);
-    Data     <- cbind(1:nPat, rep(Study, nPat), Y, X);
-
-    colnames(Data) <- c("pid", "Study", "Y", "Z",
-                        paste("X", 1:(ncol(X)-1), sep=""));
+    if (simu.y) {
+        ##beta0 + beta * x
+        xbeta    <- apply(X, 1, function(x) {set.xbeta(x, RegressCoeffs)});
+        Y        <- rnorm(nPat, xbeta, Ysig);
+    } else {
+        Y <- NA;
+    }
 
     ##return
+    Data           <- cbind(1:nPat, Study, is.randomized, Y, X);
+    colnames(Data) <- c("pid", "Study", "Randomized", "Y", "Z",
+                        paste("X", 1:(ncol(X)-1), sep=""));
+
     Data
 }
 
@@ -543,12 +739,14 @@ GenDataMatrix <- function(j, par.list, Study=NULL, cov.x=NULL, nPat=NULL, z.val=
 ##
 ##------------------------------------------------------------------------------
 simu.post.combine <- function(simu.ext, cmb.reps=NULL, chk.exist=FALSE) {
-    fsum <- function(mat) {
-        rst <- apply(mat, 1,
+    fsum <- function(mat, true.e) {
+        rst <- apply(cbind(true.e, mat),
+                     1,
                      function(x) {
-                         c(mean(x[-1]), mean((x[-1] -x[1])^2));
+            c((x[2]-x[1])^2,
+               x[1]>=x[3] & x[1]<=x[4]);
                      });
-        t(rst);
+        cbind(mat, t(rst));
     }
 
     if (is.null(cmb.reps)) {
@@ -556,7 +754,7 @@ simu.post.combine <- function(simu.ext, cmb.reps=NULL, chk.exist=FALSE) {
     }
 
     ##simu results files
-    f.rst <- get.f.name(simu.ext=simu.ext, lsts=c("simu_rst", simu.ext));
+    f.rst <- paste("simu_rst_", simu.ext, ".Rdata", sep="");
     if (file.exists(f.rst) & chk.exist) {
         print(paste(f.rst, " exists...", sep=""));
         return(NULL);
@@ -565,57 +763,73 @@ simu.post.combine <- function(simu.ext, cmb.reps=NULL, chk.exist=FALSE) {
     ##load simu setting
     load(get.f.name(simu.ext=simu.ext, lsts=c("simu_par")));
     true.e <- NULL;
+
     for (i in 1:length(SIMU.PAR.LST)) {
-        true.e <- c(true.e, SIMU.PAR.LST[[i]]$RegressCoeffs[1]);
+        true.e <- c(true.e, SIMU.PAR.LST[[i]]$true.effect);
     }
 
-
     ##combine
-    all.obs <- NULL;
-    all.ps  <- NULL;
-    all.hdp <- NULL;
+    all.rst <- NULL;
     for (cr in 1:length(cmb.reps)) {
         r     <- cmb.reps[cr];
         f.fit <- get.f.name(simu.ext=simu.ext, cur.r = cr, lsts=c("result"));
         if (!file.exists(f.fit)) {
             print(paste(f.fit, " does not exist...", sep=""));
             next;
-        } else {
-            load(f.fit);
-            all.obs <- cbind(all.obs, rst.obs[, 'dif']);
+        }
 
-            cur.ps  <- NULL;
-            cur.hdp <- NULL;
-            for (j in 1:length(DELTA.ALL)) {
-                ##ps
-                cur.ps  <- c(cur.ps, rst.ps[[1]][, 1]);
-                ##hdp
-                cur.hdp <- c(cur.hdp, rst.hdp[[1]][, 1]);
-            }
+        load(f.fit);
+        cur.obs <- rst.obs[, c('dif', 'lb', 'ub')];
+        cur.obs <- fsum(cur.obs, true.e);
+        cur.obs <- cbind("obs",
+                         cr,
+                         1:length(SIMU.PAR.LST),
+                         0,
+                         cur.obs);
 
-            all.ps  <- cbind(all.ps, cur.ps);
-            all.hdp <- cbind(all.hdp, cur.hdp);
+        all.rst <- rbind(all.rst, cur.obs);
+
+        for (j in 1:length(DELTA.ALL)) {
+            ##ps
+            cur.ps  <- rst.ps[[j]][,2:3];
+            cur.ps  <- cbind(cur.ps[,1],
+                             cur.ps[,1]-1.96*cur.ps[,2],
+                             cur.ps[,1]+1.96*cur.ps[,2]);
+            cur.ps  <- fsum(cur.ps, true.e);
+            cur.ps  <- cbind("ps",
+                             cr,
+                             1:length(SIMU.PAR.LST),
+                             DELTA.ALL[j],
+                             cur.ps);
+            all.rst <- rbind(all.rst, cur.ps);
+
+            ##hdp
+            cur.hdp <- fsum(rst.hdp[[j]], true.e);
+            cur.hdp <- cbind("hdp",
+                             cr,
+                             1:length(SIMU.PAR.LST),
+                             DELTA.ALL[j],
+                             cur.hdp);
+            all.rst <- rbind(all.rst, cur.hdp);
         }
     }
 
     ##summarize
-    sum.obs <- fsum(cbind(true.e, all.obs));
-    sum.ps  <- fsum(cbind(rep(true.e, length(DELTA.ALL)), all.ps));
-    sum.hdp <- fsum(cbind(rep(true.e, length(DELTA.ALL)), all.hdp));
+    colnames(all.rst) <- c("method", "rep", "study", "delta", "est",
+                           "lb",     "ub",  "se",    "inci");
 
-    print(sum.obs);
-    print(sum.ps);
-    print(sum.hdp);
+    allrst  <- data.frame(all.rst);
+    sum.rst <- sqldf("select method, study, delta,
+                      avg(est) as est,
+                      avg(se) as mse,
+                      avg(inci) as inci
+                      from allrst
+                      group by method, study, delta");
 
     ##save results
     print(paste(f.rst, " generated...."));
-    save(SIMU.PAR.LST, SIMU.NOTE, SIMU.PS.COV, cmb.reps, sum.obs, sum.ps, sum.hdp, file=f.rst);
+    save(SIMU.PAR.LST, SIMU.NOTE, SIMU.PS.COV,
+         cmb.reps, all.rst, sum.rst,
+         file=f.rst);
 }
 
-
-
-##------------------------------------------------------
-##
-##            POSTERIOR
-##
-##------------------------------------------------------

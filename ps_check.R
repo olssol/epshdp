@@ -1,3 +1,5 @@
+
+
 ##
 ##  check hdp model
 ##
@@ -7,63 +9,63 @@ rm(list=ls());
 options(error = recover, warn=2);
 source("ps_toolkit.R");
 
-ARGS.INX <- as.numeric(commandArgs(trailingOnly=TRUE));
-if (0 == length(ARGS.INX)) {
-    ARGS.INX <- 1;
-    print(paste("No argument entered"));
-}
-
-SIMU.ONLY <- (0 == ARGS.INX);
-
-##quit if argument exceeds number of nodes
-if (N.NODES < ARGS.INX) {
-    quit(save="no");
-}
-
-##set random seed;
-set.seed(10*ARGS.INX + 1000);
-
-SIMU.EXT <- 20;
-r        <- 2;
-delta    <- 0;
-
-##----------load simu parameters------------
-load(file=get.f.name(SIMU.EXT, lsts=c("simu_par")));
-
-simu.data <- NULL;
-for (j in 1:length(SIMU.PAR.LST)) {
-    pt.study.j  <- GenDataMatrix(j, SIMU.PAR.LST);
-    simu.data   <- rbind(simu.data, pt.study.j);
-}
+make.global(set.simu.par(11));
 
 
-##----------load data-----------------------
-rct.data <- read.table(get.f.name(simu.ext=SIMU.EXT,
-                                  cur.rep=r,
+## check rep 1
+rct.data <- read.table(get.f.name(simu.ext=20,
+                                  cur.rep=1,
                                   lsts=c("datarct")), header=T);
-rct.data <- simu.data;
 
-STUDIES  <- sort(unique(rct.data$Study));
-##HDP.COV  <- paste("score", 1:length(STUDIES), sep="");
-HDP.COV  <- c("score");
-
-hdp.ps   <- get.all.ps(rct.data, study="Study", group="Z",
-                       ps.cov=SIMU.PS.COV,
-                       delta=delta,
-                       take.logit=TRUE);
-pred.pts <- as.matrix(hdp.ps[, c("Study", HDP.COV), drop=FALSE]);
-
-
-##---1. observed results
 rst.obs <- get.obs.effect(rct.data, study="Study", group="Z", y="Y");
+hdp.ps  <- get.all.ps(rct.data, study="Study", group="Z",
+                      ps.cov=paste("X", 1:4, sep=""),
+                      delta=0,
+                      take.logit=TRUE);
+
+chk.ps <- subset(hdp.ps, Study == 1);
 
 rst.ps  <- get.ps.effect(rct.data,
                          study="Study", group="Z",
-                         ps.cov=SIMU.PS.COV,
+                         ps.cov=paste("X", 1:4, sep=""),
                          y="Y",
-                         n.breaks=PS.BREAKS,
-                         delta=delta,
+                         n.breaks=5,
+                         delta=0,
                          n.boots=5);
+
+grp0 <- read.table("simu_20/rep_1/simu_grp0/pred_1_0");
+grp1 <- read.table("simu_20/rep_1/simu_grp1/pred_1_0");
+
+g0.pred <- sqldf("select V3, avg(V5) as Pred
+                  from grp0
+                  group by V3");
+
+##nls
+ny <- nls(Y ~ score, data=chk.ps);
+
+plot(chk.ps$score, chk.ps$Y);
+points(chk.ps$score, g0.pred$Pred, col="red");
+
+chk <- subset(grp0, 101 == V3);
+plot(density(chk$V5));
+
+
+mean(grp1$V5) - mean(grp0$V5)
+
+
+
+## checking
+cur.par <- set.simu.par.19(sizes = c(10000,10000,10000))$SIMU.PAR;
+for (i in 1:length(cur.par)) {
+    cur.d <- GenDataMatrix(i, cur.par);
+    print(table(cur.d[,"Z"]));
+    m.t0  <- mean(cur.d[which(0 == cur.d[,"Z"]),"Y"]);
+    m.t1  <- mean(cur.d[which(1 == cur.d[,"Z"]),"Y"]);
+    print(m.t1 - m.t0);
+}
+
+##---1. observed results
+
 
 ##options
 ops <- list(n.iter=10000, n.discard=4000,

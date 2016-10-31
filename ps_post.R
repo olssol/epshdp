@@ -2,12 +2,34 @@ rm(list=ls());
 options(error = recover, warn=2);
 source("ps_toolkit.R");
 
+m3 <- c("obs", "ps", "hdp");
+rst <- NULL;
+for (i in 91) {
+    load(paste("simu_rst_", i, ".Rdata", sep=""));
+    for (s in 1:4) {
+        c.row <- NULL;
+        for (m in 1:3) {
+            cur.v <- subset(sum.rst, method==m3[m] & study ==s, select=est);
+            c.row <- c(c.row, cur.v[1,1]);
+        }
+        for (m in 1:3) {
+            cur.v <- subset(sum.rst, method==m3[m] & study ==s, select=mse);
+            c.row <- c(c.row, cur.v[1,1]*100);
+        }
+        c.row <- c(c.row, c.row[6]/c.row[5]);
+
+        ss <- sprintf(" & %i & %5.3f & %5.3f & %5.3f & %5.3f && %5.3f & %5.3f & %5.3f & %5.3f \\      ",
+                      s, SIMU.PAR.LST[[s]]$true.effect,
+                      c.row[1], c.row[2], c.row[3],
+                      c.row[4], c.row[5], c.row[6],
+                      c.row[7]);
+        rst <- rbind(rst,ss);
+    }
+}
+
 
 ##combine data
-SIMU.EXT <- 18;
-sum.rst <- simu.post.combine(SIMU.EXT);
-
-
+##sum.rst  <- simu.post.combine(11);
 
 
 ##sips -s format pdf simu_rst_338_pt_2.png --out s338p2.pdf

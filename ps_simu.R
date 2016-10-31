@@ -1,4 +1,4 @@
-##Time-stamp: <2016-03-07 10:01:46 cwang68>
+##Time-stamp: <2016-06-05 23:47:34 cwang68>
 
 rm(list=ls());
 options(error = recover, warn=2);
@@ -6,7 +6,7 @@ source("ps_toolkit.R");
 
 ARGS.INX <- as.numeric(commandArgs(trailingOnly=TRUE));
 if (0 == length(ARGS.INX)) {
-    ARGS.INX <- 0;
+    ARGS.INX <- 1;
     print(paste("No argument entered"));
 }
 
@@ -15,9 +15,6 @@ SIMU.ONLY <- (0 == ARGS.INX);
 if (N.NODES < ARGS.INX) {
     quit(save="no");
 }
-
-##set random seed;
-set.seed(10*ARGS.INX + 1000);
 
 ##----------------------------------------------------------
 ##                 SIMULATION
@@ -29,10 +26,13 @@ if (SIMU.ONLY) {
 
         ##simulation parameters
         make.global(set.simu.par(SIMU.EXT));
-        save(SIMU.PAR.LST, SIMU.NOTE, SIMU.PS.COV,
+        save(SIMU.PAR.LST, SIMU.NOTE,
+             SIMU.PS.COV, SIMU.SCE,
+             SIMU.HDP.COV, SIMU.OPS,
              file=get.f.name(simu.ext=SIMU.EXT, lsts=c("simu_par")));
 
         ##simu data
+        set.seed(SIMU.SCE*1000);
         for (i in 1:N.REPS) {
             cur.f <- get.f.name(simu.ext=SIMU.EXT,
                                 cur.rep=i, lsts=c("datarct"));
@@ -52,6 +52,10 @@ if (SIMU.ONLY) {
         }
     }
 } else {
+
+    ##set random seed;
+    set.seed(10*ARGS.INX + 1000);
+
     ##replications
     rep.start <- (ARGS.INX-1)*N.EACH+1;
     rep.end   <- ARGS.INX*N.EACH;
@@ -68,14 +72,13 @@ if (SIMU.ONLY) {
         print(paste( "---CUR SIM.EXT:--", SIMU.EXT, "---CUR REP:",r, "---", sep=""));
 
         ##------------read data----------------------
-        rct.data <- read.table(get.f.name(simu.ext=SIMU.EXT, cur.rep=r, lsts=c("datarct")), header=T);
-        STUDIES  <- sort(unique(rct.data$Study));
-        ##HDP.COV  <- paste("score", 1:length(STUDIES), sep="");
-        HDP.COV  <- "score";
+        rct.data   <- read.table(get.f.name(simu.ext=SIMU.EXT, cur.rep=r, lsts=c("datarct")),
+                                 header=T);
+        STUDIES    <- sort(unique(rct.data$Study));
+        rct.data$Y <- rct.data$Y;
 
         ##------------analysis-----------------------
         f.rst <- get.f.name(simu.ext=SIMU.EXT, cur.rep=r, lsts=c("result"));
-
         if (file.exists(f.rst) & IGNORE.EXISTING)
   	    next;
 
@@ -95,29 +98,27 @@ if (SIMU.ONLY) {
 
             ##---2. propensity score analysis
             rst.ps[[d]]  <- get.ps.effect(rct.data,
-                                          study="Study", group="Z",
+                                          study="Study",
+                                          group="Z",
+                                          random="Randomized",
                                           ps.cov=SIMU.PS.COV,
                                           y="Y",
-                                          n.breaks=PS.BREAKS,
-                                          delta=delta,
-                                          n.boots=5);
+                                          n.class=PS.CLASS,
+                                          delta=delta);
 
             ##---3. hdp model analysis
-            ##all ps scores
-            hdp.ps   <- get.all.ps(rct.data, study="Study", group="Z",
-                                   ps.cov=SIMU.PS.COV,
-                                   delta=delta,
-                                   take.logit=TRUE);
+
+            ##all ps scores for observational studies
+            hdp.ps <- get.all.ps(rct.data,
+                                 study="Study",
+                                 group="Z",
+                                 random="Randomized",
+                                 ps.cov=SIMU.PS.COV,
+                                 delta=delta,
+                                 take.logit=TRUE);
+
+            HDP.COV  <- SIMU.HDP.COV[which(SIMU.HDP.COV %in% colnames(hdp.ps))];
             pred.pts <- as.matrix(hdp.ps[, c("Study", HDP.COV), drop=FALSE]);
-
-            ##options
-            ops <- list(n.iter=N.ITER, n.discard=N.DISCARD,
-                        n.batch=20,
-                        mcmc.eps=0, eps=1,
-                        m.prior=1,
-                        B.prior=1, S.prior=1, alpha.prior=1,
-                        alpha=50, q=10, cc=10);
-
 
             ##fit and predict
             for (grp in TRT.NUMBER) {
@@ -127,13 +128,14 @@ if (SIMU.ONLY) {
 
                 ##assign data
                 cur.d <- subset(hdp.ps, grp == Z);
+                cur.d[,"Y"] <- cur.d[,"Y"] * CONST.Y;
                 ##sort by study no first
                 cur.d <- cur.d[order(cur.d$Study),];
 
                 ##fitting
                 cur.z     <- as.matrix(cur.d[, c("Y", HDP.COV)]);
                 cur.study <- cur.d$Study;
-                do.call(hdpmn, c(list(Z=cur.z, study=cur.study), px=ncol(cur.z)-1, ops));
+                do.call(hdpmn, c(list(Z=cur.z, study=cur.study), px=ncol(cur.z)-1, SIMU.OPS));
 
                 ##predicting
                 for (sy in STUDIES) {
@@ -142,23 +144,7 @@ if (SIMU.ONLY) {
                                                r=PRED.R,
                                                nsim=0,
                                                idx.x=1+1:length(HDP.COV),
-                                               X=cur.pts[, HDP.COV,drop=FALSE]);
-
-                    ## kk       <- 0;
-                    ## while (kk < nrow(cur.pts)) {
-                    ##     k.inxs   <- (kk+1):min(nrow(cur.pts), kk+PRED.BATCH);
-                    ##     cur.pred <- R.hdpmnPredict(j=sy,
-                    ##                                r=PRED.R,
-                    ##                                nsim=0,
-                    ##                                idx.x=1+1:length(HDP.COV),
-                    ##                                X=cur.pts[k.inxs, HDP.COV,drop=FALSE]);
-
-                    ##     ##adjust pt id
-                    ##     cur.pred[,3] <- cur.pred[,3] + kk;
-                    ##     pred.rst     <- rbind(pred.rst, cbind(grp, sy, cur.pred[,3:5]));
-                    ##     kk           <- kk + PRED.BATCH;
-                    ##     gc(verbose=TRUE);
-                    ## }
+                                               X=cur.pts[, HDP.COV, drop=FALSE]);
                 }
 
                 ##go back
@@ -166,23 +152,28 @@ if (SIMU.ONLY) {
             }
 
             ##post analysis sum hdp
-            for (s in STUDIES) {
-                colnames(pred.rst) <- c("Grp", "Study", "ID", "Iter", "Pred");
-                pred.rst <- read.table(pred.rst);
-                cur.sy <- subset(pred.rst, Study == s);
+            for (sy in STUDIES) {
+                pred.g <- NULL;
+                for (g in 1:length(TRT.NUMBER)) {
+                    simu.dir        <- set.simu.dir(paste("grp", TRT.NUMBER[g], sep=""));
+                    cur.g           <- read.table(paste(simu.dir, "/pred_", sy, "_", PRED.R, sep=""));
+                    colnames(cur.g) <- c("ID", "Iter", "Pred");
+                    pred.g[[g]]     <- cur.g;
+                }
 
-                if (0 == nrow(cur.sy))
-                    next;
-
-                all.iter <- unique(cur.sy$Iter);
+                all.iter <- unique(pred.g[[1]][,"Iter"]);
                 sy.diff  <- NULL;
                 for (k in all.iter) {
                     py <- NULL;
-                    for (g in TRT.NUMBER) {
-                        cur.p <- subset(cur.sy, Grp == g & Iter == k);
+                    for (g in 1:length(TRT.NUMBER)) {
+                        cur.p <- subset(pred.g[[g]], Iter == k);
                         py    <- cbind(py, cur.p[order(cur.p$ID), 'Pred']);
                     }
-                    sy.diff <- rbind(sy.diff, mean(py[,2] - py[,1]));
+
+                    ##transfer back
+                    py <- py / CONST.Y;
+
+                    sy.diff <- c(sy.diff, mean(py[,2] - py[,1]));
                 }
 
                 rst.hdp[[d]] <- rbind(rst.hdp[[d]],
@@ -196,7 +187,7 @@ if (SIMU.ONLY) {
 
         ##-----------save results------------------
         save(rst.obs, rst.ps, rst.hdp,
-             DELTA.ALL, SIMU.PAR.LST, SIMU.NOTE, HDP.COV,
+             DELTA.ALL, SIMU.PAR.LST, SIMU.NOTE, HDP.COV, HDP.OPS,
              file=f.rst);
     }
 }
