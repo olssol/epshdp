@@ -1,12 +1,12 @@
 ##Time-stamp: <2016-06-05 23:47:34 cwang68>
 
 rm(list=ls());
-options(error = recover, warn=2);
+options(error = recover, warn=0);
 source("ps_toolkit.R");
 
 ARGS.INX <- as.numeric(commandArgs(trailingOnly=TRUE));
 if (0 == length(ARGS.INX)) {
-    ARGS.INX <- 1;
+    ARGS.INX <- 0;
     print(paste("No argument entered"));
 }
 
@@ -37,9 +37,8 @@ if (SIMU.ONLY) {
             cur.f <- get.f.name(simu.ext=SIMU.EXT,
                                 cur.rep=i, lsts=c("datarct"));
 
-            if (!file.exists(cur.f) | IGNORE.EXISTING) {
+            if (!file.exists(cur.f) | !KEEP.EXISTING) {
                 print(paste("Simu:", cur.f, sep=""));
-
                 simu.data <- NULL;
                 for (j in 1:length(SIMU.PAR.LST)) {
                     pt.study.j  <- GenDataMatrix(j, SIMU.PAR.LST);
@@ -79,8 +78,8 @@ if (SIMU.ONLY) {
 
         ##------------analysis-----------------------
         f.rst <- get.f.name(simu.ext=SIMU.EXT, cur.rep=r, lsts=c("result"));
-        if (file.exists(f.rst) & IGNORE.EXISTING)
-  	    next;
+        if (file.exists(f.rst) & KEEP.EXISTING)
+            next;
 
         ##---1. observed results
         rst.obs <- get.obs.effect(rct.data, study="Study", group="Z", y="Y");
