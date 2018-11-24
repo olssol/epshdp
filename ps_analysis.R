@@ -2,6 +2,57 @@ rm(list=ls());
 options(error = recover, warn=2);
 source("ps_toolkit.R");
 
+##----------------------------------------------------------------------------
+##                FUNCTIONS
+##----------------------------------------------------------------------------
+
+get.zj.data <- function(fname = "zhenjing.csv") {
+    all.data <- read.table(file=fname, header=T, sep=",");
+
+    ##percentage wrong in raw data
+    inx.spo2                <- which(all.data$SPO2 <=1);
+    all.data$SPO2[inx.spo2] <- 100*all.data$SPO2[inx.spo2];
+    all.data$spo2           <- as.integer(all.data$SPO2 >= 95);
+
+    all.data$asa            <- as.integer(1 == all.data$ASA.grade);
+    all.data$allergy        <- as.integer(0 != all.data$allergy);
+    all.data$surgery        <- as.integer(0 != all.data$surgery);
+    all.data$medicine       <- as.integer(0 != all.data$medicine);
+    all.data$hypertension   <- as.integer(0 != all.data$history.of.hypertension);
+    all.data$diabetes       <- as.integer(0 != all.data$diabetes);
+    all.data$heart          <- as.integer(0 != all.data$heart.disease);
+    all.data$ae             <- all.data$adverse.events;
+    all.data$comfort        <- all.data$degree.of.comfort;
+
+    ##exclud the following columns
+    ## reasons: all non-ane sujects have reason 0
+    ## examination: only 5 subject have 2
+    all.data <- subset(all.data, 1 == examination & 0 == SAS
+                       & 0 == COPD & 0 == asthma & 0 == cerebral.infarction);
+
+    ##return
+    rst <- all.data[, c("hospital",   "group",   "sex",     "age", "asa",
+                        "diagnosis",  "BMI",  "spo2", "allergy", "surgery",
+                        "medicine",   "hypertension", "diabetes", "heart",
+                        "ae", "comfort")]
+
+    inx.comp <- complete.cases(rst);
+    rst[inx.comp,];
+
+}
+
+
+##----------------------------------------------------------------------------
+##                CONSTANTS
+##----------------------------------------------------------------------------
+
+##analysis covariates for sedation data
+PS.COV      <- c("sex",      "age",     "asa",     "diagnosis",
+                 "BMI",      "spo2",    "allergy", "surgery",
+                 "medicine", "hypertension",
+                 "diabetes", "heart");
+
+
 ARGS.INX <- as.numeric(commandArgs(trailingOnly=TRUE));
 if (0 == length(ARGS.INX)) {
     ARGS.INX <- 1;
